@@ -129,6 +129,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import warnings
 warnings.filterwarnings('ignore')
+
 class AnomalyDetector:
     def __init__(self):
         self.scaler = StandardScaler()
@@ -196,7 +197,138 @@ class RootCauseAnalyzer:
     def __init__(self):
         self.explainer = None
         self.feature_importance = None
+        self.anomaly_thresholds = {
+            'flujo_EO': {'high': 260, 'low': 150},
+            'temp_reactor': {'high': 43, 'low': 35},
+            'ph_neutralizacion': {'high': 7.5, 'low': 6.2},
+            'conc_sLES': {'high': 73, 'low': 67},
+            'agitador_rpm': {'high': 140, 'low': 100},
+            'presion_reactor': {'high': 2.5, 'low': 1.5}
+        }
         
+    def _classify_anomaly(self, sample):
+        """Clasificar el tipo de anomalía basado en las desviaciones"""
+        anomaly_types = []
+        
+        # Verificar cada parámetro contra sus límites
+        if sample['flujo_EO'] > self.anomaly_thresholds['flujo_EO']['high']:
+            anomaly_types.append("EXCESO_EO")
+        elif sample['flujo_EO'] < self.anomaly_thresholds['flujo_EO']['low']:
+            anomaly_types.append("DEFICIT_EO")
+            
+        if sample['temp_reactor'] > self.anomaly_thresholds['temp_reactor']['high']:
+            anomaly_types.append("SOBRETEMPERATURA")
+        elif sample['temp_reactor'] < self.anomaly_thresholds['temp_reactor']['low']:
+            anomaly_types.append("BAJA_TEMPERATURA")
+            
+        if sample['ph_neutralizacion'] > self.anomaly_thresholds['ph_neutralizacion']['high']:
+            anomaly_types.append("PH_ALCALINO")
+        elif sample['ph_neutralizacion'] < self.anomaly_thresholds['ph_neutralizacion']['low']:
+            anomaly_types.append("PH_ACIDO")
+            
+        if sample['conc_sLES'] > self.anomaly_thresholds['conc_sLES']['high']:
+            anomaly_types.append("CONCENTRACION_ALTA")
+        elif sample['conc_sLES'] < self.anomaly_thresholds['conc_sLES']['low']:
+            anomaly_types.append("CONCENTRACION_BAJA")
+            
+        if sample['agitador_rpm'] > self.anomaly_thresholds['agitador_rpm']['high']:
+            anomaly_types.append("AGITACION_EXCESIVA")
+        elif sample['agitador_rpm'] < self.anomaly_thresholds['agitador_rpm']['low']:
+            anomaly_types.append("AGITACION_INSUFICIENTE")
+            
+        if sample['presion_reactor'] > self.anomaly_thresholds['presion_reactor']['high']:
+            anomaly_types.append("SOBREPRESION")
+        elif sample['presion_reactor'] < self.anomaly_thresholds['presion_reactor']['low']:
+            anomaly_types.append("BAJA_PRESION")
+        
+        # Clasificación general basada en la combinación de anomalías
+        if not anomaly_types:
+            return "ANOMALIA_NO_IDENTIFICADA"
+        
+        # Priorizar anomalías críticas
+        if "EXCESO_EO" in anomaly_types and "SOBRETEMPERATURA" in anomaly_types:
+            return "RIESGO_RUNAWAY_REACTIVO"
+        elif "PH_ACIDO" in anomaly_types and "CONCENTRACION_BAJA" in anomaly_types:
+            return "FALLA_NEUTRALIZACION"
+        elif "AGITACION_INSUFICIENTE" in anomaly_types:
+            return "FALLA_MEZCLADO"
+        elif "SOBREPRESION" in anomaly_types:
+            return "RIESGO_PRESION"
+        else:
+            return "ANOMALIA_MULTIPARAMETRO_" + "_".join(anomaly_types[:3])
+    
+    def _get_critical_parameters(self, sample):
+        """Obtener parámetros críticos que están fuera de rango"""
+        critical_params = {}
+        
+        for param, thresholds in self.anomaly_thresholds.items():
+            if param in sample:
+                value = sample[param]
+                if value > thresholds['high']:
+                    critical_params[param] = {
+                        'value': value, 
+                        'limit': thresholds['high'],
+                        'deviation': f"+{value - thresholds['high']:.2f}"
+                    }
+                elif value < thresholds['low']:
+                    critical_params[param] = {
+                        'value': value, 
+                        'limit': thresholds['low'],
+                        'deviation': f"{value - thresholds['low']:.2f}"
+                    }
+        
+        return critical_params
+    
+    def _get_recommended_actions(self, sample):
+        """Generar acciones recomendadas basadas en el tipo de anomalía"""
+        anomaly_type = self._classify_anomaly(sample)
+        actions = []
+        
+        # Acciones específicas por tipo de anomalía
+        if "EXCESO_EO" in anomaly_type:
+            actions.extend([
+                "Verificar válvula de control FO-101",
+                "Revisar setpoint del controlador de flujo",
+                "Monitorear temperatura del reactor cada 5 minutos"
+            ])
+        
+        if "SOBRETEMPERATURA" in anomaly_type:
+            actions.extend([
+                "Activar sistema de enfriamiento de emergencia",
+                "Verificar funcionamiento del intercambiador de calor",
+                "Preparar protocolo de parada segura"
+            ])
+        
+        if "PH_ACIDO" in anomaly_type:
+            actions.extend([
+                "Calibrar sensor de pH inmediatamente",
+                "Verificar dosificación de NaOH",
+                "Ajustar bomba dosificadora de neutralizante"
+            ])
+        
+        if "AGITACION_INSUFICIENTE" in anomaly_type:
+            actions.extend([
+                "Verificar motor y transmisión del agitador",
+                "Inspeccionar estado de las palas del agitador",
+                "Monitorear consumo eléctrico del motor"
+            ])
+        
+        if "SOBREPRESION" in anomaly_type:
+            actions.extend([
+                "Verificar válvulas de alivio de presión",
+                "Inspeccionar sistema de ventilación",
+                "Preparar descarga segura si es necesario"
+            ])
+        
+        # Acciones generales
+        actions.extend([
+            "Notificar al supervisor de turno",
+            "Documentar evento en sistema de gestión",
+            "Programar mantenimiento preventivo relacionado"
+        ])
+        
+        return actions
+    
     def train_cause_classifier(self, df):
         """Entrenar clasificador para identificar causas"""
         # Preparar datos para clasificación
@@ -250,14 +382,18 @@ class RootCauseAnalyzer:
         """Emparejar con causas HAZOP"""
         causes = []
         
-        if sample['flujo_EO'] > 260:
+        if sample['flujo_EO'] > self.anomaly_thresholds['flujo_EO']['high']:
             causes.append("Posible válvula EO atascada - Revisar FO-101")
-        if sample['temp_reactor'] > 43:
+        if sample['temp_reactor'] > self.anomaly_thresholds['temp_reactor']['high']:
             causes.append("Temperatura elevada - Verificar sistema refrigeración")
-        if sample['ph_neutralizacion'] < 6.2:
+        if sample['ph_neutralizacion'] < self.anomaly_thresholds['ph_neutralizacion']['low']:
             causes.append("pH bajo - Revisar dosificación NaOH")
-        if abs(sample['agitador_rpm'] - 120) > 20:
+        if sample['agitador_rpm'] < self.anomaly_thresholds['agitador_rpm']['low']:
             causes.append("Problema con agitador - Verificar MX-201")
+        if sample['presion_reactor'] > self.anomaly_thresholds['presion_reactor']['high']:
+            causes.append("Sobre presión - Verificar válvulas de alivio")
+        if sample['conc_sLES'] < self.anomaly_thresholds['conc_sLES']['low']:
+            causes.append("Concentración baja - Revisar proporciones de mezcla")
         
         return causes
 
@@ -464,7 +600,7 @@ print(f"Eventos registrados: {len(audit_system.audit_log)}")
 
 class SLESRiskManagementSystem:
     def __init__(self):
-        self.hazop_analyzer = HAZOPAnalyzer()
+        self.hazop_analyzer = HAZOPAnalizer()
         self.data_simulator = ProcessDataSimulator()
         self.anomaly_detector = AnomalyDetector()
         self.root_cause_analyzer = RootCauseAnalyzer()
