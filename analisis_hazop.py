@@ -762,4 +762,4 @@ app.layout = dbc.Container([
 
 # 3. EJECUTAR EL SERVIDOR CON EL MÉTODO CORRECTO
 if __name__ == '__main__':
-    app.run(debug=True)  # <-- ¡Aquí está el cambio!
+    app.run(debug=True)
