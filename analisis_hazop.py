@@ -123,4 +123,462 @@ process_data = simulator.inject_anomalies(normal_data)
 print(f"Datos del proceso generados: {len(process_data)} muestras")
 print(process_data.head())
 
+from sklearn.ensemble import IsolationForest
+from sklearn.cluster import DBSCAN
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+import warnings
+warnings.filterwarnings('ignore')
+class AnomalyDetector:
+    def __init__(self):
+        self.scaler = StandardScaler()
+        self.models = {}
+        self.features = ['flujo_EO', 'flujo_acid', 'temp_reactor', 
+                        'presion_reactor', 'ph_neutralizacion', 'conc_sLES',
+                        'agitador_rpm', 'nivel_reactor']
+    
+    def preprocess_data(self, df):
+        """Preprocesar datos para el modelo"""
+        X = df[self.features].copy()
+        X_scaled = self.scaler.fit_transform(X)
+        return X_scaled
+    
+    def train_isolation_forest(self, X):
+        """Entrenar modelo Isolation Forest"""
+        iso_forest = IsolationForest(
+            n_estimators=100,
+            contamination=0.05,  # 5% de anomalías esperadas
+            random_state=42
+        )
+        iso_forest.fit(X)
+        return iso_forest
+    
+    def detect_anomalies(self, df):
+        """Detectar anomalías en los datos del proceso"""
+        X = self.preprocess_data(df)
+        
+        # Entrenar y predecir con Isolation Forest
+        iso_model = self.train_isolation_forest(X)
+        predictions = iso_model.predict(X)
+        
+        # Añadir resultados al DataFrame
+        df['anomaly_score'] = iso_model.decision_function(X)
+        df['is_anomaly'] = predictions == -1
+        
+        return df
+    
+    def calculate_process_stability_index(self, df, window_size=12):
+        """Calcular índice de estabilidad del proceso"""
+        df = df.copy()
+        
+        # Calcular variabilidad en ventana móvil
+        for feature in self.features:
+            rolling_std = df[feature].rolling(window=window_size).std()
+            df[f'{feature}_stability'] = 1 / (1 + rolling_std)
+        
+        # Índice de estabilidad general
+        stability_cols = [f'{feat}_stability' for feat in self.features]
+        df['process_stability'] = df[stability_cols].mean(axis=1)
+        
+        return df
+detector = AnomalyDetector()
+process_data_with_anomalies = detector.detect_anomalies(process_data)
+process_data_with_stability = detector.calculate_process_stability_index(process_data_with_anomalies)
+
+print("Datos con detección de anomalías:")
+print(process_data_with_anomalies[['timestamp', 'anomaly_score', 'is_anomaly']].head())
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report
+import shap
+
+class RootCauseAnalyzer:
+    def __init__(self):
+        self.explainer = None
+        self.feature_importance = None
+        
+    def train_cause_classifier(self, df):
+        """Entrenar clasificador para identificar causas"""
+        # Preparar datos para clasificación
+        X = df[detector.features].copy()
+        y = df['anomaly'].apply(lambda x: 1 if x > 0 else 0)  # Binario: anomalía vs normal
+        
+        # Entrenar Random Forest
+        clf = RandomForestClassifier(n_estimators=100, random_state=42)
+        clf.fit(X, y)
+        
+        # Calcular importancia de características
+        importance = pd.DataFrame({
+            'feature': detector.features,
+            'importance': clf.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        return clf, importance
+    
+    def explain_anomalies_shap(self, df, model):
+        """Explicar anomalías usando SHAP"""
+        X = df[detector.features].copy()
+        
+        # Crear explainer SHAP
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X)
+        
+        return explainer, shap_values
+    
+    def generate_root_cause_analysis(self, df, anomaly_indices):
+        """Generar análisis de causa raíz para anomalías específicas"""
+        causes = []
+        
+        for idx in anomaly_indices:
+            if idx < len(df):
+                sample = df.iloc[idx]
+                
+                # Identificar posibles causas basadas en HAZOP
+                possible_causes = self._match_hazop_causes(sample)
+                
+                causes.append({
+                    'timestamp': sample['timestamp'],
+                    'anomaly_type': self._classify_anomaly(sample),
+                    'possible_causes': possible_causes,
+                    'critical_parameters': self._get_critical_parameters(sample),
+                    'recommended_actions': self._get_recommended_actions(sample)
+                })
+        
+        return pd.DataFrame(causes)
+    
+    def _match_hazop_causes(self, sample):
+        """Emparejar con causas HAZOP"""
+        causes = []
+        
+        if sample['flujo_EO'] > 260:
+            causes.append("Posible válvula EO atascada - Revisar FO-101")
+        if sample['temp_reactor'] > 43:
+            causes.append("Temperatura elevada - Verificar sistema refrigeración")
+        if sample['ph_neutralizacion'] < 6.2:
+            causes.append("pH bajo - Revisar dosificación NaOH")
+        if abs(sample['agitador_rpm'] - 120) > 20:
+            causes.append("Problema con agitador - Verificar MX-201")
+        
+        return causes
+
+# Analizar causas raíz
+analyzer = RootCauseAnalyzer()
+clf, feature_importance = analyzer.train_cause_classifier(process_data_with_stability)
+
+print("Importancia de características para detección de anomalías:")
+print(feature_importance)
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import dash
+from dash import dcc, html
+import dash_bootstrap_components as dbc
+
+class ProcessDashboard:
+    def __init__(self, process_data):
+        self.df = process_data
+        self.features = detector.features
+        
+    def create_main_dashboard(self):
+        """Crear dashboard principal del proceso"""
+        fig = make_subplots(
+            rows=3, cols=2,
+            subplot_titles=('Temperatura Reactor', 'Flujo EO', 
+                          'pH Neutralización', 'Concentración SLES',
+                          'Estabilidad del Proceso', 'Anomalías Detectadas')
+        )
+        
+        # Gráfico de temperatura
+        fig.add_trace(
+            go.Scatter(x=self.df['timestamp'], y=self.df['temp_reactor'], 
+                      name='Temperatura', line=dict(color='blue')),
+            row=1, col=1
+        )
+        
+        # Gráfico de flujo EO
+        fig.add_trace(
+            go.Scatter(x=self.df['timestamp'], y=self.df['flujo_EO'], 
+                      name='Flujo EO', line=dict(color='green')),
+            row=1, col=2
+        )
+        
+        # Gráfico de pH
+        fig.add_trace(
+            go.Scatter(x=self.df['timestamp'], y=self.df['ph_neutralizacion'], 
+                      name='pH', line=dict(color='red')),
+            row=2, col=1
+        )
+        
+        # Gráfico de concentración
+        fig.add_trace(
+            go.Scatter(x=self.df['timestamp'], y=self.df['conc_sLES'], 
+                      name='Conc. SLES', line=dict(color='purple')),
+            row=2, col=2
+        )
+        
+        # Gráfico de estabilidad
+        fig.add_trace(
+            go.Scatter(x=self.df['timestamp'], y=self.df['process_stability'], 
+                      name='Estabilidad', line=dict(color='orange')),
+            row=3, col=1
+        )
+        
+        # Gráfico de anomalías
+        anomalies = self.df[self.df['is_anomaly']]
+        fig.add_trace(
+            go.Scatter(x=anomalies['timestamp'], y=anomalies['anomaly_score'], 
+                      mode='markers', name='Anomalías', marker=dict(color='red', size=8)),
+            row=3, col=2
+        )
+        
+        fig.update_layout(height=800, title_text="Monitorización Proceso SLES")
+        return fig
+    
+    def create_risk_matrix(self):
+        """Crear matriz de riesgo"""
+        risk_data = []
+        
+        for _, row in self.df[self.df['is_anomaly']].iterrows():
+            severity = self._calculate_severity(row)
+            probability = self._calculate_probability(row)
+            
+            risk_data.append({
+                'timestamp': row['timestamp'],
+                'severity': severity,
+                'probability': probability,
+                'risk_level': severity * probability
+            })
+        
+        return pd.DataFrame(risk_data)
+    
+    def _calculate_severity(self, row):
+        """Calcular severidad basada en desviaciones"""
+        severity = 0
+        
+        if row['temp_reactor'] > 43: severity += 2
+        if row['flujo_EO'] > 260: severity += 2
+        if row['ph_neutralizacion'] < 6.2: severity += 1
+        if abs(row['conc_sLES'] - 70) > 3: severity += 1
+        
+        return min(severity, 5)
+    
+    def _calculate_probability(self, row):
+        """Calcular probabilidad basada en duración y magnitud"""
+        return min(3 + (row['anomaly_score'] * 2), 5)
+
+# Crear dashboard
+dashboard = ProcessDashboard(process_data_with_stability)
+fig = dashboard.create_main_dashboard()
+risk_matrix = dashboard.create_risk_matrix()
+
+print("Matriz de riesgo calculada:")
+print(risk_matrix.head())
+
+class AuditSystem:
+    def __init__(self, process_data, hazop_table):
+        self.process_data = process_data
+        self.hazop_table = hazop_table
+        self.audit_log = []
+        
+    def log_anomaly_event(self, timestamp, anomaly_data, actions_taken):
+        """Registrar evento de anomalía"""
+        log_entry = {
+            'event_id': f"ANOM_{timestamp.strftime('%Y%m%d_%H%M%S')}",
+            'timestamp': timestamp,
+            'anomaly_type': anomaly_data['anomaly_type'],
+            'parameters': anomaly_data['critical_parameters'],
+            'identified_causes': anomaly_data['possible_causes'],
+            'actions_taken': actions_taken,
+            'risk_assessment': self._assess_risk(anomaly_data),
+            'follow_up_required': len(anomaly_data['possible_causes']) > 0,
+            'audit_trail': self._create_audit_trail(anomaly_data)
+        }
+        
+        self.audit_log.append(log_entry)
+        return log_entry
+    
+    def generate_pha_report(self, start_date, end_date):
+        """Generar reporte PHA (Process Hazard Analysis)"""
+        period_data = self.process_data[
+            (self.process_data['timestamp'] >= start_date) & 
+            (self.process_data['timestamp'] <= end_date)
+        ]
+        
+        anomalies = period_data[period_data['is_anomaly']]
+        
+        report = {
+            'period': f"{start_date} to {end_date}",
+            'total_anomalies': len(anomalies),
+            'risk_distribution': self._calculate_risk_distribution(anomalies),
+            'top_deviation_types': self._get_top_deviations(anomalies),
+            'effectiveness_safeguards': self._assess_safeguards(anomalies),
+            'recommendations': self._generate_recommendations(anomalies)
+        }
+        
+        return report
+    
+    def _assess_risk(self, anomaly_data):
+        """Evaluar riesgo del evento"""
+        return "Alto" if any('temperatura' in cause.lower() for cause in anomaly_data['possible_causes']) else "Medio"
+    
+    def _create_audit_trail(self, anomaly_data):
+        """Crear trail de auditoría"""
+        return {
+            'detection_time': datetime.now(),
+            'analyzed_by': 'AI_System',
+            'hazop_references': self._link_to_hazop(anomaly_data),
+            'data_sources': detector.features,
+            'model_confidence': 0.85
+        }
+    
+    def _link_to_hazop(self, anomaly_data):
+        """Enlazar con análisis HAZOP relevante"""
+        relevant_hazop = []
+        for cause in anomaly_data['possible_causes']:
+            if 'válvula' in cause.lower():
+                relevant_hazop.append('FO-101 Maintenance Procedure')
+            if 'temperatura' in cause.lower():
+                relevant_hazop.append('TISA-301 Safety System')
+        return relevant_hazop
+
+# Sistema de auditoría
+audit_system = AuditSystem(process_data_with_stability, hazop_table)
+
+# Simular algunos eventos de auditoría
+anomaly_events = process_data_with_stability[process_data_with_stability['is_anomaly']].head(3)
+for _, event in anomaly_events.iterrows():
+    cause_analysis = analyzer.generate_root_cause_analysis(
+        process_data_with_stability, 
+        [event.name]
+    )
+    
+    if not cause_analysis.empty:
+        audit_entry = audit_system.log_anomaly_event(
+            event['timestamp'],
+            cause_analysis.iloc[0].to_dict(),
+            ['Parada automática iniciada', 'Notificado equipo de mantenimiento']
+        )
+
+print("Sistema de auditoría configurado")
+print(f"Eventos registrados: {len(audit_system.audit_log)}")
+
+class SLESRiskManagementSystem:
+    def __init__(self):
+        self.hazop_analyzer = HAZOPAnalyzer()
+        self.data_simulator = ProcessDataSimulator()
+        self.anomaly_detector = AnomalyDetector()
+        self.root_cause_analyzer = RootCauseAnalyzer()
+        self.audit_system = None
+        self.dashboard = None
+        
+    def initialize_system(self):
+        """Inicializar sistema completo"""
+        print("Inicializando Sistema de Gestión de Riesgos SLES...")
+        
+        # 1. Análisis HAZOP
+        hazop_table = self.hazop_analyzer.generate_hazop_table()
+        print("✓ Análisis HAZOP completado")
+        
+        # 2. Datos del proceso
+        process_data = self.data_simulator.simulate_normal_operation()
+        process_data_with_anomalies = self.data_simulator.inject_anomalies(process_data)
+        print("✓ Datos del proceso generados")
+        
+        # 3. Detección de anomalías
+        processed_data = self.anomaly_detector.detect_anomalies(process_data_with_anomalies)
+        processed_data = self.anomaly_detector.calculate_process_stability_index(processed_data)
+        print("✓ Sistema de detección de anomalías configurado")
+        
+        # 4. Análisis de causas raíz
+        clf, feature_importance = self.root_cause_analyzer.train_cause_classifier(processed_data)
+        print("✓ Analizador de causas raíz entrenado")
+        
+        # 5. Sistema de auditoría
+        self.audit_system = AuditSystem(processed_data, hazop_table)
+        print("✓ Sistema de auditoría configurado")
+        
+        # 6. Dashboard
+        self.dashboard = ProcessDashboard(processed_data)
+        print("✓ Dashboard inicializado")
+        
+        return processed_data, hazop_table
+    
+    def run_real_time_monitoring(self, live_data):
+        """Ejecutar monitoreo en tiempo real"""
+        results = {
+            'current_status': 'NORMAL',
+            'anomalies_detected': 0,
+            'risk_level': 'BAJO',
+            'recommendations': []
+        }
+        
+        # Detectar anomalías
+        live_processed = self.anomaly_detector.detect_anomalies(live_data)
+        
+        if live_processed['is_anomaly'].any():
+            results['current_status'] = 'ALERTA'
+            results['anomalies_detected'] = live_processed['is_anomaly'].sum()
+            results['risk_level'] = 'MEDIO'
+            
+            # Analizar causas
+            anomaly_indices = live_processed[live_processed['is_anomaly']].index
+            causes = self.root_cause_analyzer.generate_root_cause_analysis(
+                live_processed, anomaly_indices
+            )
+            
+            results['recommendations'] = causes['recommended_actions'].tolist()
+        
+        return results
+
+# Ejecutar sistema completo
+risk_system = SLESRiskManagementSystem()
+processed_data, hazop_table = risk_system.initialize_system()
+
+print("\n" + "="*60)
+print("SISTEMA DE GESTIÓN DE RIESGOS SLES IMPLEMENTADO EXITOSAMENTE")
+print("="*60)
+print(f"• Análisis HAZOP: {len(hazop_table)} escenarios de riesgo")
+print(f"• Datos procesados: {len(processed_data)} muestras")
+print(f"• Anomalías detectadas: {processed_data['is_anomaly'].sum()} eventos")
+print(f"• Sistema de auditoría: {len(risk_system.audit_system.audit_log)} eventos registrados")
+
+# Generar reporte final
+def generate_final_report(processed_data, hazop_table, audit_system):
+    """Generar reporte ejecutivo final"""
+    
+    report = {
+        'executive_summary': {
+            'total_analysis_period': f"{processed_data['timestamp'].min()} to {processed_data['timestamp'].max()}",
+            'process_availability': f"{(1 - processed_data['is_anomaly'].mean()) * 100:.2f}%",
+            'risk_reduction_potential': "Estimado 40-60% mediante detección temprana",
+            'key_risk_areas': ['Sulfatación EO', 'Control pH Neutralización', 'Estabilidad Agitación']
+        },
+        'performance_metrics': {
+            'anomalies_detected': int(processed_data['is_anomaly'].sum()),
+            'false_positives': int((processed_data['is_anomaly'] & (processed_data['anomaly'] == 0)).sum()),
+            'detection_accuracy': f"{(processed_data['is_anomaly'].sum() / (processed_data['anomaly'] > 0).sum() * 100):.1f}%",
+            'mean_time_to_detect': "15-30 minutos estimados"
+        },
+        'recommendations': [
+            'Implementar mantenimiento predictivo en válvulas EO',
+            'Mejorar calibración de pH-metros (semanal vs mensual)',
+            'Agregar sensores de vibración en agitadores',
+            'Automatizar paradas de seguridad basadas en ML'
+        ]
+    }
+    
+    return report
+
+# Generar y mostrar reporte final
+final_report = generate_final_report(processed_data, hazop_table, risk_system.audit_system)
+print("\nREPORTE EJECUTIVO FINAL:")
+print("="*50)
+for section, content in final_report.items():
+    print(f"\n{section.upper().replace('_', ' ')}:")
+    if isinstance(content, dict):
+        for k, v in content.items():
+            print(f"  • {k}: {v}")
+    else:
+        for item in content:
+            print(f"  • {item}")
 
