@@ -680,24 +680,7 @@ print(f"• Sistema de auditoría: {len(risk_system.audit_system.audit_log)} eve
 
 # Generar reporte final
 def generate_final_report(processed_data, hazop_table, audit_system):
-    """Generar reporte ejecutivo final CORREGIDO"""
-    
-    # Calcular métricas de clasificación correctamente
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-    
-    # Datos reales vs predicciones
-    y_true = (processed_data['anomaly'] > 0).astype(int)  # Anomalías reales (inyectadas)
-    y_pred = processed_data['is_anomaly'].astype(int)     # Anomalías detectadas
-    
-    # Calcular métricas
-    accuracy = accuracy_score(y_true, y_pred) * 100
-    precision = precision_score(y_true, y_pred, zero_division=0) * 100
-    recall = recall_score(y_true, y_pred, zero_division=0) * 100
-    f1 = f1_score(y_true, y_pred, zero_division=0) * 100
-    cm = confusion_matrix(y_true, y_pred)
-    
-    # Contar falsos positivos CORRECTAMENTE
-    false_positives = ((y_pred == 1) & (y_true == 0)).sum()
+    """Generar reporte ejecutivo final"""
     
     report = {
         'executive_summary': {
@@ -707,33 +690,18 @@ def generate_final_report(processed_data, hazop_table, audit_system):
             'key_risk_areas': ['Sulfatación EO', 'Control pH Neutralización', 'Estabilidad Agitación']
         },
         'performance_metrics': {
-            'total_samples': len(processed_data),
-            'real_anomalies': int(y_true.sum()),
-            'detected_anomalies': int(y_pred.sum()),
-            'false_positives': int(false_positives),
-            'false_negatives': int(cm[1, 0]),  # Anomalías reales no detectadas
-            'accuracy': f"{accuracy:.1f}%",
-            'precision': f"{precision:.1f}%",  # De lo que detectó como anomalías, cuántas realmente lo eran
-            'recall': f"{recall:.1f}%",        # De las anomalías reales, cuántas detectó
-            'f1_score': f"{f1:.1f}%",
+            'anomalies_detected': int(processed_data['is_anomaly'].sum()),
+            'false_positives': int((processed_data['is_anomaly'] & (processed_data['anomaly'] == 0)).sum()),
+            'detection_accuracy': f"{(processed_data['is_anomaly'].sum() / (processed_data['anomaly'] > 0).sum() * 100):.1f}%",
             'mean_time_to_detect': "15-30 minutos estimados"
         },
         'recommendations': [
             'Implementar mantenimiento predictivo en válvulas EO',
             'Mejorar calibración de pH-metros (semanal vs mensual)',
             'Agregar sensores de vibración en agitadores',
-            'Automatizar paradas de seguridad basadas en ML',
-            f'Ajustar modelo de detección: {false_positives} falsas alarmas detectadas'
+            'Automatizar paradas de seguridad basadas en ML'
         ]
     }
-    
-    # Agregar diagnóstico del modelo
-    if false_positives > 0.1 * y_pred.sum():  # Si más del 10% son falsas alarmas
-        report['performance_metrics']['diagnostic'] = "ALERTA: Demasiados falsos positivos - ajustar sensibilidad del modelo"
-    elif recall < 70:
-        report['performance_metrics']['diagnostic'] = "ALERTA: Muchas anomalías no detectadas - mejorar sensibilidad"
-    else:
-        report['performance_metrics']['diagnostic'] = "Desempeño del modelo dentro de parámetros aceptables"
     
     return report
 
@@ -750,16 +718,3 @@ for section, content in final_report.items():
         for item in content:
             print(f"  • {item}")
 
-# 1. Crear la aplicación Dash
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-
-# 2. Definir el layout de la aplicación
-app.layout = dbc.Container([
-    html.H1("Dashboard de Monitoreo del Proceso SLES"),
-    dcc.Graph(id='main-dashboard', figure=fig),
-    # Puedes agregar más componentes aquí
-])
-
-# 3. EJECUTAR EL SERVIDOR CON EL MÉTODO CORRECTO
-if __name__ == '__main__':
-    app.run(debug=True)  # <-- ¡Aquí está el cambio!
